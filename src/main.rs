@@ -22,6 +22,7 @@ use std::env;
 use std::fmt;
 use std::fs;
 use std::fs::read_to_string;
+use std::io::{stderr, stdin};
 use std::iter;
 use std::path::Path;
 use std::path::PathBuf;
@@ -51,11 +52,9 @@ use ignore::WalkState;
 use ignore::overrides::OverrideBuilder;
 use regex::Regex;
 use regex::RegexBuilder;
+use rprompt::{prompt_reply, prompt_reply_from_bufread};
 
 mod terminal;
-
-use rprompt::prompt_reply_stderr;
-use rprompt::prompt_reply_stdout;
 
 use crate::terminal::Color;
 
@@ -126,9 +125,11 @@ fn looks_like_code(path: &Path) -> bool {
 
 fn prompt(prompt_text: &str, letters: &str, default: Option<char>) -> Result<char> {
     loop {
-        let input = prompt_reply_stdout(prompt_text).context("Unable to read user input")?;
-        if input.is_empty() && default.is_some() {
-            return Ok(default.unwrap());
+        let input = prompt_reply(prompt_text).context("Unable to read user input")?;
+        if let Some(default) = default {
+            if input.is_empty() {
+                return Ok(default);
+            }
         }
         if input.len() == 1 && letters.contains(&input) {
             return Ok(input.chars().next().unwrap());
@@ -909,11 +910,14 @@ compatibility with the original codemod.",
         .build()
         .with_context(|| format!("Unable to make regex from {}", regex_str))?;
     if regex.is_match("") {
-        let _ = prompt_reply_stderr(&format!(
-            "Warning: your regex {:?} matches the empty string. This is probably
+        let _ = prompt_reply_from_bufread(
+            &mut stdin().lock(),
+            &mut stderr(),
+            format!(
+                "Warning: your regex {regex:?} matches the empty string. This is probably
 not what you want. Press Enter to continue anyway or Ctrl-C to quit.",
-            regex,
-        ))?;
+            ),
+        )?;
     }
     let matcher = RegexMatcherBuilder::new()
         .case_insensitive(ignore_case)
