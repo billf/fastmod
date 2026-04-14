@@ -1,7 +1,7 @@
 [package]
 name = "fastmod"
-version = "0.4.4"
-authors = ["Scott Wolchok <swolchok@fb.com>"]
+version = "0.4.5"
+authors = ["Scott Wolchok <swolchok@fb.com>", "Adam Ernst <adamjernst@meta.com>", "Dustin Shahidehpour <dust@meta.com>"]
 description = "Fast, partial replacement for codemod (find/replace tool for programmers)"
 edition = "2024"
 homepage = "https://github.com/facebookincubator/fastmod"
@@ -13,7 +13,7 @@ license = "Apache-2.0"
 
 [dependencies]
 anyhow = "1.0"
-clap = "2.31.2"
+clap = "4.6.0"
 crossterm = "0.29"
 diff = "0.1.11"
 grep = "0.3"

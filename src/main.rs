@@ -37,9 +37,7 @@ use std::thread;
 use anyhow::Context;
 use anyhow::Error;
 use anyhow::ensure;
-use clap::App;
-use clap::Arg;
-use clap::crate_version;
+use clap::Parser;
 use diff::Result as DiffResult;
 use grep::regex::RegexMatcher;
 use grep::regex::RegexMatcherBuilder;
@@ -73,24 +71,144 @@ enum FileSet {
     },
 }
 
-fn get_file_set(matches: &clap::ArgMatches) -> Option<FileSet> {
-    if let Some(files) = matches.values_of_lossy("extensions") {
-        return Some(FileSet::Extensions(files));
-    }
-    if let Some(files) = matches.values_of_lossy("glob") {
-        return Some(FileSet::Glob {
-            matches: files,
-            case_insensitive: false,
-        });
-    }
-    if let Some(files) = matches.values_of_lossy("iglob") {
-        return Some(FileSet::Glob {
-            matches: files,
-            case_insensitive: true,
-        });
-    }
+#[derive(Debug, Parser)]
+#[command(
+    name = "fastmod",
+    about = "fastmod is a fast partial replacement for codemod.",
+    version,
+    long_about = "fastmod is a tool to assist you with large-scale codebase refactors
+that can be partially automated but still require human oversight and occasional
+intervention.
 
-    None
+Example: Let's say you're deprecating your use of the <font> tag. From the
+command line, you might make progress by running:
+
+  fastmod -m -d www --extensions php,html \\
+      '<font *color=\"?(.*?)\"?>(.*?)</font>' \\
+      '<span style=\"color: ${1};\">${2}</span>'
+
+For each match of the regex, you'll be shown a colored diff and asked if you
+want to accept the change, reject it, or edit the line in question in your
+$EDITOR of choice.
+
+NOTE: Whereas codemod uses Python regexes, fastmod uses the Rust regex
+crate, which supports a slightly different regex syntax and does not
+support look around or backreferences. In particular, use ${1} instead
+of \\1 to get the contents of the first capture group, and use $$ to
+write a literal $ in the replacement string. See
+https://docs.rs/regex#syntax for details.
+
+A consequence of this syntax is that the use of single quotes instead
+of double quotes around the replacment text is important, because the
+bash shell itself cares about the $ character in double-quoted
+strings. If you must double-quote your input text, be careful to
+escape $ characters properly!"
+)]
+struct Args {
+    #[arg(
+        short = 'm',
+        long = "multiline",
+        help = "Have regex work over multiple lines (i.e., have dot match newlines)."
+    )]
+    multiline: bool,
+
+    #[arg(
+        short = 'd',
+        long = "dir",
+        value_name = "DIR",
+        num_args = 1,
+        help = "The path whose descendent files are to be explored.",
+        long_help = "The path whose descendent files are to be explored.
+Included as a flag instead of a positional argument for
+compatibility with the original codemod."
+    )]
+    dir: Vec<String>,
+
+    #[arg(
+        index = 3,
+        value_name = "FILE OR DIR",
+        help = "Paths whose descendent files are to be explored."
+    )]
+    file_or_dir: Vec<String>,
+
+    #[arg(
+        short = 'i',
+        long = "ignore-case",
+        help = "Perform case-insensitive search."
+    )]
+    ignore_case: bool,
+
+    #[arg(
+        short = 'e',
+        long = "extensions",
+        value_name = "EXTENSION",
+        value_delimiter = ',',
+        conflicts_with_all = ["glob", "iglob"],
+        help = "A comma-delimited list of file extensions to process."
+    )]
+    extensions: Option<Vec<String>>,
+
+    #[arg(
+        short = 'g',
+        long = "glob",
+        value_name = "GLOB",
+        num_args = 1..,
+        conflicts_with = "iglob",
+        help = "A space-delimited list of globs to process."
+    )]
+    glob: Option<Vec<String>>,
+
+    #[arg(long = "hidden", help = "Search hidden files.")]
+    hidden: bool,
+
+    #[arg(short = 'u', long = "no-ignore", help = "Also search ignored files.")]
+    no_ignore: bool,
+
+    #[arg(
+        long = "iglob",
+        value_name = "IGLOB",
+        num_args = 1..,
+        help = "A space-delimited list of case-insensitive globs to process."
+    )]
+    iglob: Option<Vec<String>>,
+
+    #[arg(
+        long = "accept-all",
+        help = "Automatically accept all changes (use with caution)."
+    )]
+    accept_all: bool,
+
+    #[arg(
+        long = "print-changed-files",
+        help = "Print the paths of changed files. (Recommended to be combined with --accept-all.)"
+    )]
+    print_changed_files: bool,
+
+    #[arg(
+        short = 'F',
+        long = "fixed-strings",
+        help = "Treat REGEX as a literal string. Avoids the need to escape regex metacharacters (compare to ripgrep's option of the same name)."
+    )]
+    fixed_strings: bool,
+
+    #[arg(
+        long = "diff-tool",
+        value_name = "COMMAND",
+        help = "Use an external diff tool (e.g., difftastic, delta, colordiff).",
+        long_help = "Use an external diff tool for displaying diffs instead of the built-in \
+diff. The tool will be invoked with two temporary file paths \
+as arguments (old content, new content). Examples:
+  --diff-tool difft
+  --diff-tool delta
+  --diff-tool 'difft --color always'"
+    )]
+    diff_tool: Option<String>,
+
+    #[arg(index = 1, value_name = "REGEX", help = "Regular expression to match.")]
+    match_regex: String,
+
+    #[arg(index = 2, help = "Substitution to replace with.")]
+    subst: String,
 }
 
 fn notify_fast_mode() {
@@ -794,177 +912,50 @@ impl Fastmod {
 }
 
 fn fastmod() -> Result<()> {
-    let matches = App::new("fastmod")
-        .about("fastmod is a fast partial replacement for codemod.")
-        .version(crate_version!())
-        .long_about(
-            "fastmod is a tool to assist you with large-scale codebase refactors
-that can be partially automated but still require human oversight and occasional
-intervention.
-
-Example: Let's say you're deprecating your use of the <font> tag. From the
-command line, you might make progress by running:
-
-  fastmod -m -d www --extensions php,html \\
-      '<font *color=\"?(.*?)\"?>(.*?)</font>' \\
-      '<span style=\"color: ${1};\">${2}</span>'
-
-For each match of the regex, you'll be shown a colored diff and asked if you
-want to accept the change, reject it, or edit the line in question in your
-$EDITOR of choice.
-
-NOTE: Whereas codemod uses Python regexes, fastmod uses the Rust regex
-crate, which supports a slightly different regex syntax and does not
-support look around or backreferences. In particular, use ${1} instead
-of \\1 to get the contents of the first capture group, and use $$ to
-write a literal $ in the replacement string. See
-https://docs.rs/regex#syntax for details.
-
-A consequence of this syntax is that the use of single quotes instead
-of double quotes around the replacment text is important, because the
-bash shell itself cares about the $ character in double-quoted
-strings. If you must double-quote your input text, be careful to
-escape $ characters properly!",
-        )
-        .arg(
-            Arg::with_name("multiline")
-                .short("m")
-                .long("multiline")
-                .help("Have regex work over multiple lines (i.e., have dot match newlines)."),
-        )
-        .arg(
-            Arg::with_name("dir")
-                .short("d")
-                .long("dir")
-                .value_name("DIR")
-                .help("The path whose descendent files are to be explored.")
-                .long_help(
-                    "The path whose descendent files are to be explored.
-Included as a flag instead of a positional argument for
-compatibility with the original codemod.",
-                )
-                .multiple(true)
-                .number_of_values(1),
-        )
-        .arg(
-            Arg::with_name("file_or_dir")
-                .value_name("FILE OR DIR")
-                .help("Paths whose descendent files are to be explored.")
-                .multiple(true)
-                .index(3),
-        )
-        .arg(
-            Arg::with_name("ignore_case")
-                .short("i")
-                .long("ignore-case")
-                .help("Perform case-insensitive search."),
-        )
-        .arg(
-            Arg::with_name("extensions")
-                .short("e")
-                .long("extensions")
-                .value_name("EXTENSION")
-                .multiple(true)
-                .require_delimiter(true)
-                .conflicts_with_all(&["glob", "iglob"])
-                // TODO: support Unix pattern-matching of extensions?
-                .help("A comma-delimited list of file extensions to process."),
-        )
-        .arg(
-            Arg::with_name("glob")
-            .short("g")
-            .long("glob")
-            .value_name("GLOB")
-            .multiple(true)
-            .conflicts_with("iglob")
-            .help("A space-delimited list of globs to process.")
-        )
-        .arg(
-            Arg::with_name("hidden")
-                .long("hidden")
-                .help("Search hidden files.")
-        )
-        .arg(
-            Arg::with_name("no_ignore")
-                .short("u")
-                .long("no-ignore")
-                .help("Also search ignored files.")
-        )
-        .arg(
-            Arg::with_name("iglob")
-            .long("iglob")
-            .value_name("IGLOB")
-            .multiple(true)
-            .help("A space-delimited list of case-insensitive globs to process.")
-        )
-        .arg(
-            Arg::with_name("accept_all")
-                .long("accept-all")
-                .help("Automatically accept all changes (use with caution)."),
-        )
-        .arg(
-            Arg::with_name("print_changed_files")
-                .long("print-changed-files")
-                .help("Print the paths of changed files. (Recommended to be combined with --accept-all.)"),
-        )
-        .arg(
-            Arg::with_name("fixed_strings")
-                .long("fixed-strings")
-                .short("F")
-                .help("Treat REGEX as a literal string. Avoids the need to escape regex metacharacters (compare to ripgrep's option of the same name).")
-        )
-        .arg(
-            Arg::with_name("diff_tool")
-                .long("diff-tool")
-                .value_name("COMMAND")
-                .help("Use an external diff tool (e.g., difftastic, delta, colordiff).")
-                .long_help(
-                    "Use an external diff tool for displaying diffs instead of the built-in \
-diff. The tool will be invoked with two temporary file paths \
-as arguments (old content, new content). Examples:
-  --diff-tool difft
-  --diff-tool delta
-  --diff-tool 'difft --color always'"
-                )
-        )
-        .arg(
-            Arg::with_name("match")
-                .value_name("REGEX")
-                .help("Regular expression to match.")
-                .required(true)
-                .index(1),
-        )
-        .arg(
-            Arg::with_name("subst")
-             // TODO: support empty substitution to mean "open my
-             // editor at instances of this regex"?
-             .required(true)
-             .help("Substitution to replace with.")
-             .index(2),
-        )
-        .get_matches();
-    let multiline = matches.is_present("multiline");
+    let Args {
+        multiline,
+        dir,
+        file_or_dir,
+        ignore_case,
+        extensions,
+        glob,
+        hidden,
+        no_ignore,
+        iglob,
+        accept_all,
+        print_changed_files,
+        fixed_strings,
+        diff_tool,
+        match_regex,
+        subst,
+    } = Args::parse();
     let dirs = {
-        let mut dirs: Vec<_> = matches
-            .values_of("dir")
-            .unwrap_or_default()
-            .chain(matches.values_of("file_or_dir").unwrap_or_default())
+        let mut dirs: Vec<_> = dir
+            .iter()
+            .map(String::as_str)
+            .chain(file_or_dir.iter().map(String::as_str))
             .collect();
         if dirs.is_empty() {
             dirs.push(".");
         }
         dirs
     };
-    let ignore_case = matches.is_present("ignore_case");
-    let file_set = get_file_set(&matches);
-    let accept_all = matches.is_present("accept_all");
-    let hidden = matches.is_present("hidden");
-    let no_ignore = matches.is_present("no_ignore");
-    let print_changed_files = matches.is_present("print_changed_files");
-    let diff_tool = matches.value_of("diff_tool").map(String::from);
-    let regex_str = matches.value_of("match").expect("match is required!");
-    let subst = matches.value_of("subst").expect("subst is required!");
-    let (maybe_escaped_regex, subst) = if matches.is_present("fixed_strings") {
+    let file_set = if let Some(files) = extensions {
+        Some(FileSet::Extensions(files))
+    } else if let Some(files) = glob {
+        Some(FileSet::Glob {
+            matches: files,
+            case_insensitive: false,
+        })
+    } else {
+        iglob.map(|files| FileSet::Glob {
+            matches: files,
+            case_insensitive: true,
+        })
+    };
+    let regex_str = match_regex.as_str();
+    let subst = subst.as_str();
+    let (maybe_escaped_regex, subst) = if fixed_strings {
         (regex::escape(regex_str), subst.replace("$", "$$"))
     } else {
         (regex_str.to_string(), subst.to_string())
