@@ -739,7 +739,7 @@ impl Fastmod {
                     let dirent = match result {
                         Ok(d) => d,
                         Err(e) => {
-                            eprintln!("Warning: {}", &e);
+                            eprintln!("Warning: {}", e);
                             return WalkState::Continue;
                         }
                     };
@@ -866,7 +866,7 @@ impl Fastmod {
                 let dirent = match result {
                     Ok(d) => d,
                     Err(e) => {
-                        eprintln!("Warning: {}", &e);
+                        eprintln!("Warning: {}", e);
                         return WalkState::Continue;
                     }
                 };
